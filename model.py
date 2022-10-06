@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from opt_einsum import contract
 from long_seq import process_long_input
-from losses import ATLoss, SimcseLoss
+from losses import ATLoss
 from transformers import BertConfig, BertModel, BertTokenizer
 from axial_attention.axial_attention import calculate_permutations, PermuteToFrom, SelfAttention
 from torch.nn import init
@@ -130,13 +130,14 @@ class AxialTransformer_by_entity(nn.Module):
         return x
 
 class DocREModel(nn.Module):
-    def __init__(self, config, model, emb_size=768, block_size=64, num_labels=-1, axial_attention='none'):
+    def __init__(self, config, model, emb_size=768, block_size=64, num_labels=-1, axial_attention='none', tag='train'):
         super().__init__()
         self.config = config
         self.model = model
         self.hidden_size = config.hidden_size
-        self.loss_fnt = ATLoss()
         self.axial_attention = axial_attention
+        self.tag = tag
+        self.loss_fnt = ATLoss()
 
         self.head_extractor = nn.Linear(2 * config.hidden_size, emb_size)
         self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
@@ -172,12 +173,11 @@ class DocREModel(nn.Module):
             for e in entity_pos[i]:
                 if len(e) > 1:
                     e_emb, e_att = [], []
-                    for start, end in e: #实体多个提及的起始位置和结束位置
+                    for start, end in e:
                         if start + offset < c:
                             # In case the entity mention is truncated due to limited max seq length.
                             e_emb.append(sequence_output[i, start + offset])
                             e_att.append(attention[i, :, start + offset])
-                    #对应原文Encodor通过max pooling处理提及堆叠
                     if len(e_emb) > 0:
                         e_emb = torch.logsumexp(torch.stack(e_emb, dim=0), dim=0)
                         e_att = torch.stack(e_att, dim=0).mean(0)
@@ -194,26 +194,21 @@ class DocREModel(nn.Module):
                         e_att = torch.zeros(h, c).to(attention)
                 entity_embs.append(e_emb)
                 entity_atts.append(e_att)
-            #entity_embs是一个实体对内所有涉及实体的实体表示
             entity_embs = torch.stack(entity_embs, dim=0)  # [n_e, d]
             entity_atts = torch.stack(entity_atts, dim=0)  # [n_e, h, seq_len]
 
             ht_i = torch.LongTensor(hts[i]).to(sequence_output.device)
-            # 头实体是第一列，尾实体是第二列，通过ht_i实体编号获取entity_embs内对应实体的embedding
             hs = torch.index_select(entity_embs, 0, ht_i[:, 0])
             ts = torch.index_select(entity_embs, 0, ht_i[:, 1])
-            # 同样的方法获取实体的attention
             h_att = torch.index_select(entity_atts, 0, ht_i[:, 0])
             t_att = torch.index_select(entity_atts, 0, ht_i[:, 1])
-            # 公式对应论文第四页，通过两个实体的额外本地上下文信息增强实体嵌入
             ht_att = (h_att * t_att).mean(1)
             ht_att = ht_att / (ht_att.sum(1, keepdim=True) + 1e-5)
-            # rs为获取到的本地上下文嵌入
             rs = contract("ld,rl->rd", sequence_output[i], ht_att)
 
-            hss.append(hs) # 头实体嵌入
-            tss.append(ts) # 尾实体嵌入
-            rss.append(rs) # 头实体、尾实体关注的上下文嵌入
+            hss.append(hs)
+            tss.append(ts)
+            rss.append(rs)
         hss = torch.cat(hss, dim=0)
         tss = torch.cat(tss, dim=0)
         rss = torch.cat(rss, dim=0)
@@ -288,18 +283,30 @@ class DocREModel(nn.Module):
                 labels=None,
                 entity_pos=None,
                 hts=None,
-                instance_mask=None,
+                pos_input_ids=None,
+                pos_input_mask=None,
+                tmp_eids=None,
+                evidence_entity_pos=None,
                 ):
 
-        sequence_output, attention = self.encode(input_ids, attention_mask)
-        
+        # input_ids: [batch, max_seq_length]
+        # attention_mask: [batch, max_seq_length]
+        # labels:  [batch, num_class]
+        # entity_pos: [batch, num_entity, num_mention]
+        # hts: [batch, num_ht]
+        # pos_input_ids: [batch, max_seq_length]
+        # pos_input_mask: [batch, max_seq_length]
+        # tmp_eids: [batch, used_entity_pair_ids]
+        # evidence_entity_pos: [batch, num_entity, num_mention]
+
+        sequence_output, attention = self.encode(input_ids, attention_mask) # sequence_output: [batch\batch*3, max_seq_length, emb], attention: [batch\batch*3, num_layer, max_seq_length, emb]
 
         if self.axial_attention is 'none':
             hs, rs, ts = self.get_hrt(sequence_output, attention, entity_pos, hts)
-            #对应修正后的公式3和公式4，即公式6和7
+
             hs = torch.tanh(self.head_extractor(torch.cat([hs, rs], dim=1)))
             ts = torch.tanh(self.tail_extractor(torch.cat([ts, rs], dim=1)))
-            #对应公式5，将hs和ts拆分成多个段，减少参数数量
+
             b1 = hs.view(-1, self.emb_size // self.block_size, self.block_size)
             b2 = ts.view(-1, self.emb_size // self.block_size, self.block_size)
             bl = (b1.unsqueeze(3) * b2.unsqueeze(2)).view(-1, self.emb_size * self.block_size)
@@ -309,10 +316,9 @@ class DocREModel(nn.Module):
             ne = 42
             nes = [len(x) for x in entity_pos]
 
-            #对应修正后的公式3和公式4，即公式6和7
             hs = torch.tanh(self.head_extractor(torch.cat([hs, rs], dim=3)))
             ts = torch.tanh(self.tail_extractor(torch.cat([ts, rs], dim=3)))
-            #对应公式5，将hs和ts拆分成多个段，减少参数数量
+
             b1 = hs.view(-1, ne, ne, self.emb_size // self.block_size, self.block_size)
             b2 = ts.view(-1, ne, ne, self.emb_size // self.block_size, self.block_size)
             bl = (b1.unsqueeze(5) * b2.unsqueeze(4)).view(-1, ne, ne, self.emb_size * self.block_size)
@@ -322,7 +328,7 @@ class DocREModel(nn.Module):
 
             logits = self.classifier(feature)
 
-            self_mask = (1 - torch.diag(torch.ones((ne)))).unsqueeze(0).unsqueeze(-1).to(sequence_output) # mask掉自己和自己的关系对
+            self_mask = (1 - torch.diag(torch.ones((ne)))).unsqueeze(0).unsqueeze(-1).to(sequence_output)
             logits_classifier = logits * self_mask
             logits_classifier = torch.cat([logits_classifier.clone()[x, :nes[x], :nes[x] , :].reshape(-1, self.config.num_labels) for x in range(len(nes))])
         
@@ -334,45 +340,3 @@ class DocREModel(nn.Module):
             loss = self.loss_fnt(logits_classifier.float(), labels.float())
             output = (loss.to(sequence_output),) + output
         return output
-
-class SimCSEModel(nn.Module):
-    def __init__(self, config, pretrained_model, pooling: str):
-        super(SimCSEModel, self).__init__()
-        self.config = config
-        self.model = pretrained_model
-        self.pooling = pooling
-        self.loss_fnt = SimcseLoss()
-
-    def forward(self, input_ids, attention_mask):
-        out, attention, hidden_states = self.encode(input_ids, attention_mask, output_hidden_states=True)
-        # out, attention, hidden_states = self.bert(input_ids, attention_mask, output_hidden_states=True)
-
-        if self.pooling == 'cls':
-            return self.loss_fnt(hidden_states[-1][:, 0]) # [batch, 768]
-
-        if self.pooling == 'last-avg':
-            last = hidden_states[-1].transpose(1, 2)  # [batch, 768, seqlen]
-            return self.loss_fnt(torch.avg_pool1d(last, kernel_size=last.shape[-1]).squeeze(-1))  # [batch, 768]
-
-        if self.pooling == 'first-last-avg':
-            first = hidden_states[1].transpose(1, 2)  # [batch, 768, seqlen]
-            last = hidden_states[-1].transpose(1, 2)  # [batch, 768, seqlen]
-            first_avg = torch.avg_pool1d(first, kernel_size=last.shape[-1]).squeeze(-1)  # [batch, 768]
-            last_avg = torch.avg_pool1d(last, kernel_size=last.shape[-1]).squeeze(-1)  # [batch, 768]
-            avg = torch.cat((first_avg.unsqueeze(1), last_avg.unsqueeze(1)), dim=1)  # [batch, 2, 768]
-            return self.loss_fnt(torch.avg_pool1d(avg.transpose(1, 2), kernel_size=2).squeeze(-1))  # [batch, 768]
-
-    def encode(self, input_ids, attention_mask, output_hidden_states=False):
-        config = self.config
-        if config.transformer_type == "bert":
-            start_tokens = [config.cls_token_id]
-            end_tokens = [config.sep_token_id]
-        elif config.transformer_type == "roberta":
-            start_tokens = [config.cls_token_id]
-            end_tokens = [config.sep_token_id, config.sep_token_id]
-
-        sequence_output, attention, hidden_states = process_long_input(self.model, input_ids, attention_mask, start_tokens, end_tokens, output_hidden_states)
-        if output_hidden_states:
-            return sequence_output, attention, hidden_states
-        else:
-            return sequence_output, attention
