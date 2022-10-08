@@ -130,7 +130,7 @@ class AxialTransformer_by_entity(nn.Module):
         return x
 
 class DocREModel(nn.Module):
-    def __init__(self, config, model, emb_size=768, block_size=64, num_labels=-1, axial_attention='none', tag='train'):
+    def __init__(self, config, model, emb_size=768, block_size=64, num_labels=-1, axial_attention='none', tag='Train'):
         super().__init__()
         self.config = config
         self.model = model
@@ -162,8 +162,41 @@ class DocREModel(nn.Module):
             start_tokens = [config.cls_token_id]
             end_tokens = [config.sep_token_id, config.sep_token_id]
         sequence_output, attention = process_long_input(self.model, input_ids, attention_mask, start_tokens, end_tokens)
-        return sequence_output, attention
+        if self.tag == "Train":
+            sequence_output, evidence_sequence_output = sequence_output.chunk(2, 0)
+            attention, evidence_attention = attention.chunk(2, 0)
+            return sequence_output, attention, evidence_sequence_output, evidence_attention
+        else:
+            return sequence_output, attention
     
+    def get_entity_emb(self, sequence_output, attention, entity_pos):
+        offset = 1 if self.config.transformer_type in ["bert", "roberta"] else 0
+        n, h, _, c = attention.size()
+        entity_embs = []
+        for i in range(len(entity_pos)):
+            entities= []
+            for e in entity_pos[i]:
+                if len(e) > 1:
+                    e_emb = []
+                    for start, end in e:
+                        if start + offset < c:
+                            # In case the entity mention is truncated due to limited max seq length.
+                            e_emb.append(sequence_output[i, start + offset])
+                    if len(e_emb) > 0:
+                        e_emb = torch.logsumexp(torch.stack(e_emb, dim=0), dim=0)
+                    else:
+                        e_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
+                else:
+                    start, end = e[0]
+                    if start + offset < c:
+                        e_emb = sequence_output[i, start + offset]
+                    else:
+                        e_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
+                entities.append(e_emb)
+            entity_embs.append(torch.stack(entities, dim=0))  # [n_e, d]
+        entity_embs = torch.cat(entity_embs, dim=0) # [num_entities, embs]
+        return entity_embs
+
     def get_hrt(self, sequence_output, attention, entity_pos, hts):
         offset = 1 if self.config.transformer_type in ["bert", "roberta"] else 0
         n, h, _, c = attention.size()
@@ -285,7 +318,7 @@ class DocREModel(nn.Module):
                 hts=None,
                 pos_input_ids=None,
                 pos_input_mask=None,
-                tmp_eids=None,
+                eids_map=None,
                 evidence_entity_pos=None,
                 ):
 
@@ -298,8 +331,13 @@ class DocREModel(nn.Module):
         # pos_input_mask: [batch, max_seq_length]
         # tmp_eids: [batch, used_entity_pair_ids]
         # evidence_entity_pos: [batch, num_entity, num_mention]
-
-        sequence_output, attention = self.encode(input_ids, attention_mask) # sequence_output: [batch\batch*3, max_seq_length, emb], attention: [batch\batch*3, num_layer, max_seq_length, emb]
+        if self.tag == "Train":
+            input_ids = torch.concat((input_ids, pos_input_ids), dim=0)
+            attention_mask = torch.concat((attention_mask, pos_input_mask), dim=0)
+            sequence_output, attention, evidence_sequence_output, evidence_attention = self.encode(input_ids, attention_mask) # sequence_output: [batch\batch*2, max_seq_length, emb], attention: [batch\batch*2, num_layer, max_seq_length, emb]
+            entity_embs = self.get_entity_emb(evidence_sequence_output, evidence_attention, evidence_entity_pos)
+        else: 
+            sequence_output, attention = self.encode(input_ids, attention_mask) # sequence_output: [batch, max_seq_length, emb], attention: [batch, num_layer, max_seq_length, emb]
 
         if self.axial_attention is 'none':
             hs, rs, ts = self.get_hrt(sequence_output, attention, entity_pos, hts)

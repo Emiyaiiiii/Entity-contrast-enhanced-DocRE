@@ -146,7 +146,7 @@ def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none',
                         # neg_input_ids.extend([0] * (sent[-1] - sent[0]))
             pos_input_ids = tokenizer.build_inputs_with_special_tokens(pos_input_ids)
 
-            tmp_eids = [] # a list of entity_pos_id which in evidence sentences
+            eids_map = [] # a list of entity_id which in evidence sentences
             evidence_entity_pos = [] # a list of entity_pos which in evidence sentences
             for eid, e in enumerate(entities):
                 e_poss = []
@@ -160,10 +160,10 @@ def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none',
 
                 if len(e_poss) > 0: # if the entity has at least one mention that occurs in evidence
                     evidence_entity_pos.append(e_poss)
-                    tmp_eids.append(eid)
+                    eids_map.append(eid)
 
             feature['pos_input_ids'] = pos_input_ids # context make up by evidence senteces
-            feature['tmp_eids'] = tmp_eids # entity part ids which in evidence senteces
+            feature['eids_map'] = eids_map # entity ids which in evidence senteces
             feature['evidence_entity_pos'] = evidence_entity_pos # entity_pos in evidence senteces
                 
         features.append(feature)

@@ -20,7 +20,7 @@ def ATLOP_collate_fn(batch):
 
     pos_input_ids = [f["pos_input_ids"] + [0] * (max_len - len(f["pos_input_ids"])) for f in batch if "pos_input_ids" in f.keys()]
     pos_input_mask = [[1.0] * len(f["pos_input_ids"]) + [0.0] * (max_len - len(f["pos_input_ids"])) for f in batch if "pos_input_ids" in f.keys()]
-    tmp_eids = [f["tmp_eids"] for f in batch if "tmp_eids" in f.keys()]
+    tmp_eids = [f["eids_map"] for f in batch if "eids_map" in f.keys()]
     evidence_entity_pos = [f["evidence_entity_pos"] for f in batch if "evidence_entity_pos" in f.keys()]
 
     input_ids = torch.tensor(input_ids, dtype=torch.long)
