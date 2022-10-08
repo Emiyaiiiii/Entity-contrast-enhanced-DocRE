@@ -169,33 +169,60 @@ class DocREModel(nn.Module):
         else:
             return sequence_output, attention
     
-    def get_entity_emb(self, sequence_output, attention, entity_pos):
+    def get_entity_emb(self, sequence_output, evidence_sequence_output, entity_pos, evidence_entity_pos, eids_map):
         offset = 1 if self.config.transformer_type in ["bert", "roberta"] else 0
-        n, h, _, c = attention.size()
-        entity_embs = []
+        n, c, em = sequence_output.size()
+        en, ec, em = evidence_sequence_output.size()
+        ori_embs = []
+        evi_embs = []
         for i in range(len(entity_pos)):
-            entities= []
-            for e in entity_pos[i]:
-                if len(e) > 1:
-                    e_emb = []
-                    for start, end in e:
+            ori_entities = []
+            evi_entities = []
+            for id, e in enumerate(entity_pos[i]):
+                if id in eids_map[i]:
+                    evi_e = evidence_entity_pos[i][eids_map[i].index(id)]
+                    if len(e) > 1 and len(evi_e) > 1:
+                        ori_emb = []
+                        evi_emb = []
+                        for start, end in e:
+                            if start + offset < c:
+                                # In case the entity mention is truncated due to limited max seq length.
+                                ori_emb.append(sequence_output[i, start + offset])
+                        if len(ori_emb) > 0:
+                            ori_emb = torch.logsumexp(torch.stack(ori_emb, dim=0), dim=0)
+                        else:
+                            ori_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
+
+                        for start, end in evi_e:
+                            if start + offset < ec:
+                                # In case the entity mention is truncated due to limited max seq length.
+                                evi_emb.append(evidence_sequence_output[i, start + offset])
+                        if len(evi_emb) > 0:
+                            evi_emb = torch.logsumexp(torch.stack(evi_emb, dim=0), dim=0)
+                        else:
+                            evi_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
+                            
+                    else:
+                        start, end = e[0]
+                        evi_start, evu_end = evi_e[0]
                         if start + offset < c:
-                            # In case the entity mention is truncated due to limited max seq length.
-                            e_emb.append(sequence_output[i, start + offset])
-                    if len(e_emb) > 0:
-                        e_emb = torch.logsumexp(torch.stack(e_emb, dim=0), dim=0)
-                    else:
-                        e_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
-                else:
-                    start, end = e[0]
-                    if start + offset < c:
-                        e_emb = sequence_output[i, start + offset]
-                    else:
-                        e_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
-                entities.append(e_emb)
-            entity_embs.append(torch.stack(entities, dim=0))  # [n_e, d]
-        entity_embs = torch.cat(entity_embs, dim=0) # [num_entities, embs]
-        return entity_embs
+                            ori_emb = sequence_output[i, start + offset]
+                        else:
+                            ori_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
+
+                        if evi_start + offset < ec:
+                            evi_emb = sequence_output[i, evi_start + offset]
+                        else:
+                            evi_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
+
+                    ori_entities.append(ori_emb)
+                    evi_entities.append(evi_emb)
+
+            ori_embs.append(torch.stack(ori_entities, dim=0))  # [n_e, d]
+            evi_embs.append(torch.stack(evi_entities, dim=0))  # [n_e, d]
+        ori_embs = torch.cat(ori_embs, dim=0) # [num_entities, embs]
+        evi_embs = torch.cat(evi_embs, dim=0) # [num_entities, embs]
+        return ori_embs, evi_embs
 
     def get_hrt(self, sequence_output, attention, entity_pos, hts):
         offset = 1 if self.config.transformer_type in ["bert", "roberta"] else 0
@@ -335,7 +362,7 @@ class DocREModel(nn.Module):
             input_ids = torch.concat((input_ids, pos_input_ids), dim=0)
             attention_mask = torch.concat((attention_mask, pos_input_mask), dim=0)
             sequence_output, attention, evidence_sequence_output, evidence_attention = self.encode(input_ids, attention_mask) # sequence_output: [batch\batch*2, max_seq_length, emb], attention: [batch\batch*2, num_layer, max_seq_length, emb]
-            entity_embs = self.get_entity_emb(evidence_sequence_output, evidence_attention, evidence_entity_pos)
+            ori_embs, evi_embs = self.get_entity_emb(sequence_output, evidence_sequence_output, entity_pos, evidence_entity_pos, eids_map)
         else: 
             sequence_output, attention = self.encode(input_ids, attention_mask) # sequence_output: [batch, max_seq_length, emb], attention: [batch, num_layer, max_seq_length, emb]
 
