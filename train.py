@@ -58,15 +58,18 @@ def ATLOP_train(args, model, train_features, dev_features, test_features):
                     optimizer.step()
                     scheduler.step()
                     model.zero_grad()
-                    num_steps += 1
+                    num_steps+=1
                 wandb.log({"loss": loss.item()}, step=num_steps)
-                if (step + 1) == len(train_dataloader) - 1 or (args.evaluation_steps > 0 and num_steps % args.evaluation_steps == 0 and step % args.gradient_accumulation_steps == 0):
-                    dev_score, dev_output = ATLOP_evaluate(args, model, dev_features, tag="dev")
+                if (step == 0 and epoch==0) or (step + 1) == len(train_dataloader) - 1:
+                    print('epoch', epoch, "loss:", loss.item())
+                    dev_score, dev_output = ATLOP_evaluate(args, model, dev_features, tag="Dev")
+                    print(dev_output)
+
+                    if dev_score != -1:
+                        wandb.log(dev_output, step=num_steps)
 
                     lm_lr, classifier_lr = get_lr(optimizer)
-                    wandb.log(dev_output, step=num_steps)
                     wandb.log({"LM lr" : round(lm_lr,5), "Classifier lr" : round(classifier_lr,5)}, step=num_steps)
-
                     if dev_score > best_score:
                         best_score = dev_score
                         pred = ATLOP_report(args, model, test_features)
@@ -74,8 +77,6 @@ def ATLOP_train(args, model, train_features, dev_features, test_features):
                             json.dump(pred, fh)
                         if args.save_path != "":
                             torch.save(model.state_dict(), args.save_path)
-
-
         return num_steps
 
     new_layer = ["extractor", "bilinear"]
@@ -91,7 +92,7 @@ def ATLOP_train(args, model, train_features, dev_features, test_features):
     model.zero_grad()
     finetune(train_features, optimizer, args.num_train_epochs, num_steps)
 
-def ATLOP_evaluate(args, model, features, tag="dev"):
+def ATLOP_evaluate(args, model, features, tag="Dev"):
     dataloader = DataLoader(features, batch_size=args.test_batch_size, shuffle=False, collate_fn=ATLOP_collate_fn, drop_last=False)
     preds = []
     for batch in dataloader:
@@ -116,16 +117,13 @@ def ATLOP_evaluate(args, model, features, tag="dev"):
     preds = np.concatenate(preds, axis=0).astype(np.float32)
     ans = to_official(preds, features)
 
-    #if len(ans) > 0:
-    if tag=='dev':
-        best_f1, _, best_f1_ign, _, best_p, best_r = official_evaluate(ans, args.data_dir, args.train_file, args.dev_file)
-    elif tag=='train':
-        best_f1, _, best_f1_ign, _, best_p, best_r = official_evaluate(ans, args.data_dir, args.train_file, args.train_file)
+    if len(ans) > 0:
+        best_f1, _, best_f1_ign, _ = official_evaluate(ans, args.data_dir)
+    else:
+        best_f1 = best_f1_ign = -1
     output = {
         tag + "_F1": best_f1 * 100,
         tag + "_F1_ign": best_f1_ign * 100,
-        tag + "_P": best_p * 100,
-        tag + "_R": best_r * 100,
     }
     return best_f1, output
 
@@ -185,10 +183,14 @@ def main():
                         help="Number of updates steps to accumulate before performing a backward/update pass.")
     parser.add_argument("--num_labels", default=4, type=int,
                         help="Max number of labels in prediction.")
-    parser.add_argument("--learning_rate", default=5e-5, type=float,
+    parser.add_argument("--learning_rate", default=1e-5, type=float,
                         help="The initial learning rate for Adam.")
     parser.add_argument("--classifier_lr", default=1e-5, type=float,
-                        help="The initial learning rate for Adam.")                      
+                        help="The initial learning rate for Adam.")  
+    parser.add_argument("--gamma_pos", default=1.0, type=float,
+                        help="Gamma for positive class")
+    parser.add_argument("--gamma_neg", default=1.0, type=float,
+                        help="Gamma for negative class")
     parser.add_argument("--adam_epsilon", default=1e-6, type=float,
                         help="Epsilon for Adam optimizer.")
     parser.add_argument("--max_grad_norm", default=1.0, type=float,
@@ -264,7 +266,7 @@ def main():
     wandb.init(project="ATLOP-TEST", entity="15346186000", config=args)
     
     set_seed(args)
-    model = DocREModel(config, model, num_labels=args.num_labels, axial_attention=args.axial_attention)
+    model = DocREModel(args, config, model, num_labels=args.num_labels, axial_attention=args.axial_attention)
     model.to(device)
 
     if args.load_pretrained != "": #Training from checkpoint(continue_roberta)

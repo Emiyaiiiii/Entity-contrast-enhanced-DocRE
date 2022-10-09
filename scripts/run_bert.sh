@@ -1,5 +1,4 @@
 python train.py --data_dir /data/wh/dataset/docred \
---use_simcse_model yes \
 --transformer_type bert \
 --model_name_or_path bert-base-cased \
 --save_path checkpoints/test-bert-model-best.pt \

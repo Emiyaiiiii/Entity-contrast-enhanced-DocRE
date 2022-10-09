@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 from opt_einsum import contract
 from long_seq import process_long_input
-from losses import ATLoss
+from losses import ATLoss, AFLoss
 from transformers import BertConfig, BertModel, BertTokenizer
 from axial_attention.axial_attention import calculate_permutations, PermuteToFrom, SelfAttention
 from torch.nn import init
@@ -130,14 +130,16 @@ class AxialTransformer_by_entity(nn.Module):
         return x
 
 class DocREModel(nn.Module):
-    def __init__(self, config, model, emb_size=768, block_size=64, num_labels=-1, axial_attention='none', tag='Train'):
+    def __init__(self, args, config, model, emb_size=768, block_size=64, num_labels=-1, axial_attention='none'):
         super().__init__()
         self.config = config
         self.model = model
         self.hidden_size = config.hidden_size
         self.axial_attention = axial_attention
-        self.tag = tag
-        self.loss_fnt = ATLoss()
+
+        # self.loss_fnt = ATLoss()
+        self.loss_fnt = AFLoss(gamma_pos = args.gamma_pos, gamma_neg = args.gamma_neg,)
+        self.contarst_loss_fnt = torch.nn.CosineEmbeddingLoss()
 
         self.head_extractor = nn.Linear(2 * config.hidden_size, emb_size)
         self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
@@ -153,7 +155,7 @@ class DocREModel(nn.Module):
         self.block_size = block_size
         self.num_labels = num_labels
 
-    def encode(self, input_ids, attention_mask):
+    def encode(self, input_ids, attention_mask, pos_input_ids, pos_input_mask):
         config = self.config
         if config.transformer_type == "bert":
             start_tokens = [config.cls_token_id]
@@ -161,12 +163,16 @@ class DocREModel(nn.Module):
         elif config.transformer_type == "roberta":
             start_tokens = [config.cls_token_id]
             end_tokens = [config.sep_token_id, config.sep_token_id]
-        sequence_output, attention = process_long_input(self.model, input_ids, attention_mask, start_tokens, end_tokens)
-        if self.tag == "Train":
+
+        if pos_input_ids != None:
+            input_ids = torch.concat((input_ids, pos_input_ids), dim=0)
+            attention_mask = torch.concat((attention_mask, pos_input_mask), dim=0)
+            sequence_output, attention = process_long_input(self.model, input_ids, attention_mask, start_tokens, end_tokens)
             sequence_output, evidence_sequence_output = sequence_output.chunk(2, 0)
             attention, evidence_attention = attention.chunk(2, 0)
             return sequence_output, attention, evidence_sequence_output, evidence_attention
         else:
+            sequence_output, attention = process_long_input(self.model, input_ids, attention_mask, start_tokens, end_tokens)
             return sequence_output, attention
     
     def get_entity_emb(self, sequence_output, evidence_sequence_output, entity_pos, evidence_entity_pos, eids_map):
@@ -181,9 +187,9 @@ class DocREModel(nn.Module):
             for id, e in enumerate(entity_pos[i]):
                 if id in eids_map[i]:
                     evi_e = evidence_entity_pos[i][eids_map[i].index(id)]
+                    ori_emb = []
+                    evi_emb = []
                     if len(e) > 1 and len(evi_e) > 1:
-                        ori_emb = []
-                        evi_emb = []
                         for start, end in e:
                             if start + offset < c:
                                 # In case the entity mention is truncated due to limited max seq length.
@@ -217,9 +223,9 @@ class DocREModel(nn.Module):
 
                     ori_entities.append(ori_emb)
                     evi_entities.append(evi_emb)
-
-            ori_embs.append(torch.stack(ori_entities, dim=0))  # [n_e, d]
-            evi_embs.append(torch.stack(evi_entities, dim=0))  # [n_e, d]
+            if len(ori_entities)>0 and len(evi_entities)>0:
+                ori_embs.append(torch.stack(ori_entities, dim=0))  # [n_e, d]
+                evi_embs.append(torch.stack(evi_entities, dim=0))  # [n_e, d]
         ori_embs = torch.cat(ori_embs, dim=0) # [num_entities, embs]
         evi_embs = torch.cat(evi_embs, dim=0) # [num_entities, embs]
         return ori_embs, evi_embs
@@ -348,7 +354,7 @@ class DocREModel(nn.Module):
                 eids_map=None,
                 evidence_entity_pos=None,
                 ):
-
+                
         # input_ids: [batch, max_seq_length]
         # attention_mask: [batch, max_seq_length]
         # labels:  [batch, num_class]
@@ -358,13 +364,13 @@ class DocREModel(nn.Module):
         # pos_input_mask: [batch, max_seq_length]
         # tmp_eids: [batch, used_entity_pair_ids]
         # evidence_entity_pos: [batch, num_entity, num_mention]
-        if self.tag == "Train":
-            input_ids = torch.concat((input_ids, pos_input_ids), dim=0)
-            attention_mask = torch.concat((attention_mask, pos_input_mask), dim=0)
-            sequence_output, attention, evidence_sequence_output, evidence_attention = self.encode(input_ids, attention_mask) # sequence_output: [batch\batch*2, max_seq_length, emb], attention: [batch\batch*2, num_layer, max_seq_length, emb]
+         
+        if pos_input_ids != None:
+            sequence_output, attention, evidence_sequence_output, evidence_attention = self.encode(input_ids, attention_mask, pos_input_ids, pos_input_mask) # sequence_output: [batch\batch*2, max_seq_length, emb], attention: [batch\batch*2, num_layer, max_seq_length, emb]
             ori_embs, evi_embs = self.get_entity_emb(sequence_output, evidence_sequence_output, entity_pos, evidence_entity_pos, eids_map)
-        else: 
-            sequence_output, attention = self.encode(input_ids, attention_mask) # sequence_output: [batch, max_seq_length, emb], attention: [batch, num_layer, max_seq_length, emb]
+            evi_sentences_loss = self.contarst_loss_fnt(ori_embs, evi_embs, torch.ones(len(ori_embs)).to(ori_embs))
+        else:
+            sequence_output, attention = self.encode(input_ids, attention_mask, pos_input_ids, pos_input_mask) # sequence_output: [batch\batch*2, max_seq_length, emb], attention: [batch\batch*2, num_layer, max_seq_length, emb]
 
         if self.axial_attention is 'none':
             hs, rs, ts = self.get_hrt(sequence_output, attention, entity_pos, hts)
@@ -402,6 +408,6 @@ class DocREModel(nn.Module):
         if labels is not None:
             labels = [torch.tensor(label) for label in labels]
             labels = torch.cat(labels, dim=0).to(logits_classifier)
-            loss = self.loss_fnt(logits_classifier.float(), labels.float())
+            loss = self.loss_fnt(logits_classifier.float(), labels.float()) + 0.1 * evi_sentences_loss
             output = (loss.to(sequence_output),) + output
         return output
