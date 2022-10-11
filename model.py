@@ -1,3 +1,4 @@
+from info_nce import InfoNCE
 import torch
 import torch.nn as nn
 from opt_einsum import contract
@@ -137,9 +138,9 @@ class DocREModel(nn.Module):
         self.hidden_size = config.hidden_size
         self.axial_attention = axial_attention
 
-        # self.loss_fnt = ATLoss()
-        self.loss_fnt = AFLoss(gamma_pos = args.gamma_pos, gamma_neg = args.gamma_neg,)
-        self.contarst_loss_fnt = torch.nn.CosineEmbeddingLoss()
+        self.loss_fnt = ATLoss()
+        # self.loss_fnt = AFLoss(gamma_pos = args.gamma_pos, gamma_neg = args.gamma_neg,)
+        self.contarst_loss_fnt = InfoNCE()
 
         self.head_extractor = nn.Linear(2 * config.hidden_size, emb_size)
         self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
@@ -368,7 +369,7 @@ class DocREModel(nn.Module):
         if pos_input_ids != None:
             sequence_output, attention, evidence_sequence_output, evidence_attention = self.encode(input_ids, attention_mask, pos_input_ids, pos_input_mask) # sequence_output: [batch\batch*2, max_seq_length, emb], attention: [batch\batch*2, num_layer, max_seq_length, emb]
             ori_embs, evi_embs = self.get_entity_emb(sequence_output, evidence_sequence_output, entity_pos, evidence_entity_pos, eids_map)
-            evi_sentences_loss = self.contarst_loss_fnt(ori_embs, evi_embs, torch.ones(len(ori_embs)).to(ori_embs))
+            evi_sentences_loss = self.contarst_loss_fnt(ori_embs, evi_embs)
         else:
             sequence_output, attention = self.encode(input_ids, attention_mask, pos_input_ids, pos_input_mask) # sequence_output: [batch\batch*2, max_seq_length, emb], attention: [batch\batch*2, num_layer, max_seq_length, emb]
 
@@ -408,6 +409,7 @@ class DocREModel(nn.Module):
         if labels is not None:
             labels = [torch.tensor(label) for label in labels]
             labels = torch.cat(labels, dim=0).to(logits_classifier)
-            loss = self.loss_fnt(logits_classifier.float(), labels.float()) + 0.1 * evi_sentences_loss
+            # loss = self.loss_fnt(logits_classifier.float(), labels.float())
+            loss = self.loss_fnt(logits_classifier.float(), labels.float()) + evi_sentences_loss
             output = (loss.to(sequence_output),) + output
         return output

@@ -17,6 +17,9 @@ from utils import set_seed, ATLOP_collate_fn
 from prepro import read_docred
 from evaluation import to_official, official_evaluate
 import wandb
+import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
+
 
 def get_lr(optimizer):
     lm_lr = optimizer.param_groups[0]['lr']
@@ -62,7 +65,7 @@ def ATLOP_train(args, model, train_features, dev_features, test_features):
                 wandb.log({"loss": loss.item()}, step=num_steps)
                 if (step == 0 and epoch==0) or (step + 1) == len(train_dataloader) - 1:
                     print('epoch', epoch, "loss:", loss.item())
-                    dev_score, dev_output = ATLOP_evaluate(args, model, dev_features, tag="Dev")
+                    dev_score, dev_output = ATLOP_evaluate(args, model, dev_features, tag="dev")
                     print(dev_output)
 
                     if dev_score != -1:
@@ -92,7 +95,7 @@ def ATLOP_train(args, model, train_features, dev_features, test_features):
     model.zero_grad()
     finetune(train_features, optimizer, args.num_train_epochs, num_steps)
 
-def ATLOP_evaluate(args, model, features, tag="Dev"):
+def ATLOP_evaluate(args, model, features, tag="dev"):
     dataloader = DataLoader(features, batch_size=args.test_batch_size, shuffle=False, collate_fn=ATLOP_collate_fn, drop_last=False)
     preds = []
     for batch in dataloader:
@@ -103,11 +106,11 @@ def ATLOP_evaluate(args, model, features, tag="Dev"):
                   'entity_pos': batch[3],
                   'hts': batch[4],
                   }
-        if args.tag == "Train":
-            inputs['pos_input_ids'] = batch[5].to(args.device)
-            inputs['pos_input_mask'] = batch[6].to(args.device)
-            inputs['eids_map'] = batch[7]
-            inputs['evidence_entity_pos'] = batch[8]
+        # if args.tag == "Train":
+        #     inputs['pos_input_ids'] = batch[5].to(args.device)
+        #     inputs['pos_input_mask'] = batch[6].to(args.device)
+        #     inputs['eids_map'] = batch[7]
+        #     inputs['evidence_entity_pos'] = batch[8]
         with torch.no_grad():
             pred, *_ = model(**inputs)
             pred = pred.cpu().numpy()
@@ -171,7 +174,7 @@ def main():
                         help="The maximum total input sequence length after tokenization. Sequences longer "
                              "than this will be truncated, sequences shorter will be padded.")
 
-    parser.add_argument("--axial_attention", default="multi_external", type=str,
+    parser.add_argument("--axial_attention", default="none", type=str,
                         help="type of AxialAttention.", choices=['none', 'self_attention', 'single_external', 'multi_external'])
     parser.add_argument("--tag", default="Train", type=str,
                         choices=['Train', 'Dev'])    
@@ -183,7 +186,7 @@ def main():
                         help="Number of updates steps to accumulate before performing a backward/update pass.")
     parser.add_argument("--num_labels", default=4, type=int,
                         help="Max number of labels in prediction.")
-    parser.add_argument("--learning_rate", default=1e-5, type=float,
+    parser.add_argument("--learning_rate", default=5e-5, type=float,
                         help="The initial learning rate for Adam.")
     parser.add_argument("--classifier_lr", default=1e-5, type=float,
                         help="The initial learning rate for Adam.")  
@@ -263,7 +266,7 @@ def main():
         print('Created and saved new test features')
 
     #Training
-    wandb.init(project="ATLOP-TEST", entity="15346186000", config=args)
+    wandb.init(project="ATLOP", entity="15346186000", config=args)
     
     set_seed(args)
     model = DocREModel(args, config, model, num_labels=args.num_labels, axial_attention=args.axial_attention)
