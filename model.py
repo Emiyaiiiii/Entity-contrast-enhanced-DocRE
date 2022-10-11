@@ -410,6 +410,6 @@ class DocREModel(nn.Module):
             labels = [torch.tensor(label) for label in labels]
             labels = torch.cat(labels, dim=0).to(logits_classifier)
             # loss = self.loss_fnt(logits_classifier.float(), labels.float())
-            loss = self.loss_fnt(logits_classifier.float(), labels.float()) + evi_sentences_loss
+            loss = self.loss_fnt(logits_classifier.float(), labels.float()) + evi_sentences_loss * 0.1
             output = (loss.to(sequence_output),) + output
         return output
