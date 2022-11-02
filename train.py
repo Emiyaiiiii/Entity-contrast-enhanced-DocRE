@@ -46,11 +46,13 @@ def ATLOP_train(args, model, train_features, dev_features, test_features):
                           'entity_pos': batch[3],
                           'hts': batch[4]
                           }
-                if args.tag == "Train":
+                if args.evidence_sentences != "none":
                     inputs['pos_input_ids'] = batch[5].to(args.device)
                     inputs['pos_input_mask'] = batch[6].to(args.device)
                     inputs['eids_map'] = batch[7]
                     inputs['evidence_entity_pos'] = batch[8]
+                    inputs['evi_hts'] = batch[9]
+                    inputs['hts_map'] = batch[10]
                 outputs = model(**inputs)
                 loss = outputs[0] / args.gradient_accumulation_steps
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -106,11 +108,6 @@ def ATLOP_evaluate(args, model, features, tag="dev"):
                   'entity_pos': batch[3],
                   'hts': batch[4],
                   }
-        # if args.tag == "Train":
-        #     inputs['pos_input_ids'] = batch[5].to(args.device)
-        #     inputs['pos_input_mask'] = batch[6].to(args.device)
-        #     inputs['eids_map'] = batch[7]
-        #     inputs['evidence_entity_pos'] = batch[8]
         with torch.no_grad():
             pred, *_ = model(**inputs)
             pred = pred.cpu().numpy()
@@ -174,11 +171,21 @@ def main():
                         help="The maximum total input sequence length after tokenization. Sequences longer "
                              "than this will be truncated, sequences shorter will be padded.")
 
+    # Ablation Study
     parser.add_argument("--axial_attention", default="none", type=str,
                         help="type of AxialAttention.", choices=['none', 'self_attention', 'single_external', 'multi_external'])
-    parser.add_argument("--tag", default="Train", type=str,
-                        choices=['Train', 'Dev'])    
-    parser.add_argument("--train_batch_size", default=4, type=int,
+    parser.add_argument("--evidence_sentences", default="entity_pair", type=str,
+                        choices=['none', 'entity', 'entity_pair']) 
+    parser.add_argument("--classifier_loss", default="ATLoss", type=str,
+                        choices=['ATLoss', 'AFLoss'])
+    parser.add_argument("--evi_loss", default="InfoNCE", type=str,
+                        choices=['InfoNCE', 'CosineEmbeddingLoss'])
+    parser.add_argument("--gamma_pos", default=1.0, type=float,
+                        help="Gamma for positive class")
+    parser.add_argument("--gamma_neg", default=1.0, type=float,
+                        help="Gamma for negative class")
+
+    parser.add_argument("--train_batch_size", default=2, type=int,
                         help="Batch size for training.")
     parser.add_argument("--test_batch_size", default=8, type=int,
                         help="Batch size for testing.")
@@ -190,10 +197,6 @@ def main():
                         help="The initial learning rate for Adam.")
     parser.add_argument("--classifier_lr", default=1e-5, type=float,
                         help="The initial learning rate for Adam.")  
-    parser.add_argument("--gamma_pos", default=1.0, type=float,
-                        help="Gamma for positive class")
-    parser.add_argument("--gamma_neg", default=1.0, type=float,
-                        help="Gamma for negative class")
     parser.add_argument("--adam_epsilon", default=1e-6, type=float,
                         help="Epsilon for Adam optimizer.")
     parser.add_argument("--max_grad_norm", default=1.0, type=float,
@@ -238,38 +241,38 @@ def main():
     read = read_docred
     suffix = '.{}.pt'.format(args.model_name_or_path)
     # train_features
-    if os.path.exists(os.path.join(args.data_dir, args.train_file + args.axial_attention + suffix)):
-        train_features = torch.load(os.path.join(args.data_dir, args.train_file + args.axial_attention + suffix))
+    if os.path.exists(os.path.join(args.data_dir, args.train_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix)):
+        train_features = torch.load(os.path.join(args.data_dir, args.train_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix))
         print('Loaded train features')
     else:
         train_file = os.path.join(args.data_dir, args.train_file)
-        train_features = read(train_file, tokenizer, max_seq_length=args.max_seq_length, axial_attention=args.axial_attention, tag=args.tag)
-        torch.save(train_features, os.path.join(args.data_dir, args.train_file + args.axial_attention + suffix))
+        train_features = read(train_file, tokenizer, max_seq_length=args.max_seq_length, axial_attention=args.axial_attention, evidence_sentences=args.evidence_sentences)
+        torch.save(train_features, os.path.join(args.data_dir, args.train_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix))
         print('Created and saved new train features')
     # dev_features   
-    if os.path.exists(os.path.join(args.data_dir, args.dev_file + args.axial_attention + suffix)):
-        dev_features= torch.load(os.path.join(args.data_dir, args.dev_file + args.axial_attention + suffix))
+    if os.path.exists(os.path.join(args.data_dir, args.dev_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix)):
+        dev_features= torch.load(os.path.join(args.data_dir, args.dev_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix))
         print('Loaded dev features')
     else:
         dev_file = os.path.join(args.data_dir, args.dev_file)
-        dev_features = read(dev_file, tokenizer, max_seq_length=args.max_seq_length, axial_attention=args.axial_attention, tag=args.tag)
-        torch.save(dev_features, os.path.join(args.data_dir, args.dev_file + args.axial_attention + suffix))
+        dev_features = read(dev_file, tokenizer, max_seq_length=args.max_seq_length, axial_attention=args.axial_attention, evidence_sentences=args.evidence_sentences)
+        torch.save(dev_features, os.path.join(args.data_dir, args.dev_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix))
         print('Created and saved new dev features')
     # test_features
-    if os.path.exists(os.path.join(args.data_dir, args.test_file + args.axial_attention + suffix)):
-        test_features = torch.load(os.path.join(args.data_dir, args.test_file + args.axial_attention + suffix))
+    if os.path.exists(os.path.join(args.data_dir, args.test_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix)):
+        test_features = torch.load(os.path.join(args.data_dir, args.test_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix))
         print('Loaded test features')
     else:
         test_file = os.path.join(args.data_dir, args.test_file)
-        test_features = read(test_file, tokenizer, max_seq_length=args.max_seq_length, axial_attention=args.axial_attention)
-        torch.save(test_features, os.path.join(args.data_dir, args.test_file + args.axial_attention + suffix))
+        test_features = read(test_file, tokenizer, max_seq_length=args.max_seq_length, axial_attention=args.axial_attention, evidence_sentences=args.evidence_sentences)
+        torch.save(test_features, os.path.join(args.data_dir, args.test_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix))
         print('Created and saved new test features')
 
     #Training
     wandb.init(project="ATLOP", entity="15346186000", config=args)
     
     set_seed(args)
-    model = DocREModel(args, config, model, num_labels=args.num_labels, axial_attention=args.axial_attention)
+    model = DocREModel(args, config, model, num_labels=args.num_labels)
     model.to(device)
 
     if args.load_pretrained != "": #Training from checkpoint(continue_roberta)

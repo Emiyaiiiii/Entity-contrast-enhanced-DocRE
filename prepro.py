@@ -15,7 +15,7 @@ def chunks(l, n):
     return res
 
 
-def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none', tag='Train'):
+def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none', evidence_sentences='Train'):
     i_line = 0
     pos_samples = 0
     neg_samples = 0
@@ -70,7 +70,7 @@ def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none',
         if "labels" in sample:
             for label in sample['labels']:
                 evidence = label['evidence']
-                evidence_sents.extend(evidence)
+                evidence_sents.extend(label['evidence'])
                 r = int(docred_rel2id[label['r']])
                 if (label['h'], label['t']) not in train_triple:
                     train_triple[(label['h'], label['t'])] = [
@@ -78,6 +78,8 @@ def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none',
                 else:
                     train_triple[(label['h'], label['t'])].append(
                         {'relation': r, 'evidence': evidence})
+            for entity in entities:
+                evidence_sents.extend([mention['sent_id'] for mention in entity])
             evidence_sents = list(set(evidence_sents))
 
         entity_pos = [] # all entity_pos in data
@@ -91,9 +93,35 @@ def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none',
         sents = sents[:max_seq_length - 2]
         input_ids = tokenizer.convert_tokens_to_ids(sents)
         input_ids = tokenizer.build_inputs_with_special_tokens(input_ids)
+
+        pos_input_ids = []
+        eids_map = [] # a list of entity_id which in evidence sentences
+        evidence_entity_pos = [] # a list of entity_pos which in evidence sentences
+        if evidence_sentences != 'none': # prepare data for evidence sentences contrast training
+            if len(evidence_sents)>0:
+                for i_s, sent in enumerate(sent_map):
+                    sent=list(sent.values())
+                    if i_s in evidence_sents:
+                        pos_input_ids.extend(tokenizer.convert_tokens_to_ids(sents[sent[0]: sent[-1]]))
+            pos_input_ids = tokenizer.build_inputs_with_special_tokens(pos_input_ids)
+
+            for eid, e in enumerate(entities):
+                e_poss = []
+                for m in e:
+                    if m['sent_id'] not in evidence_sents:
+                        continue
+                    offset = sum([len(sents_local[i]) for i in evidence_sents if i<m['sent_id']]) # local_pos + len(previous sents in evidence)
+                    start = sent_map_local[m["sent_id"]][m["pos"][0]] + offset
+                    end = sent_map_local[m["sent_id"]][m["pos"][1]] + offset
+                    e_poss.append((start, end,))
+                if len(e_poss) > 0: # if the entity has at least one mention that occurs in evidence senteces
+                    evidence_entity_pos.append(e_poss)
+                    eids_map.append(eid)
         
         relations, hts = [], []
+        evi_hts, hts_map = [], []
         if axial_attention is 'none': 
+            hts_id = 0
             for h, t in train_triple.keys():
                 relation = [0] * len(docred_rel2id)
                 for mention in train_triple[h, t]:
@@ -101,6 +129,10 @@ def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none',
                     evidence = mention["evidence"]
                 relations.append(relation)
                 hts.append([h, t])
+                if h in eids_map and t in eids_map:
+                    evi_hts.append([eids_map.index(h), eids_map.index(t)])
+                    hts_map.append(hts_id)
+                hts_id += 1
                 pos_samples += 1
             for h in range(len(entities)):
                 for t in range(len(entities)):
@@ -108,9 +140,14 @@ def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none',
                         relation = [1] + [0] * (len(docred_rel2id) - 1)
                         relations.append(relation)
                         hts.append([h, t])
+                        if h in eids_map and t in eids_map:
+                            evi_hts.append([eids_map.index(h), eids_map.index(t)])
+                            hts_map.append(hts_id)
+                        hts_id += 1
                         neg_samples += 1
             assert len(relations) == len(entities) * (len(entities) - 1)
         else: # If we use axial attention, we need to pair up all the entities.
+            hts_id = 0
             for h in range(len(entities)):
                 for t in range(len(entities)):  
                     if (h, t) in train_triple.keys():
@@ -119,12 +156,20 @@ def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none',
                             relation[mention["relation"]] = 1
                             evidence = mention["evidence"]
                         relations.append(relation)
-                        hts.append([h,t])
+                        hts.append([h, t])
+                        if h in eids_map and t in eids_map:
+                            evi_hts.append([eids_map.index(h), eids_map.index(t)])
+                            hts_map.append(hts_id)
+                        hts_id += 1
                         pos_samples += 1
                     elif (h, t) not in train_triple.keys():
                         relation = [1] + [0] * (len(docred_rel2id) - 1)
                         relations.append(relation)
                         hts.append([h, t])
+                        if h in eids_map and t in eids_map:
+                            evi_hts.append([eids_map.index(h), eids_map.index(t)])
+                            hts_map.append(hts_id)
+                        hts_id += 1
                         neg_samples += 1
             assert len(relations) == len(entities) * len(entities)
 
@@ -136,36 +181,12 @@ def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none',
                    'title': sample['title']
                    }
 
-        if tag == 'Train': # prepare data for evidence sentences contrast training
-            pos_input_ids = []
-            if len(evidence_sents)>0:
-                for i_s, sent in enumerate(sent_map):
-                    sent=list(sent.values())
-                    if i_s in evidence_sents:
-                        pos_input_ids.extend(tokenizer.convert_tokens_to_ids(sents[sent[0]: sent[-1]]))
-                        # neg_input_ids.extend([0] * (sent[-1] - sent[0]))
-            pos_input_ids = tokenizer.build_inputs_with_special_tokens(pos_input_ids)
-
-            eids_map = [] # a list of entity_id which in evidence sentences
-            evidence_entity_pos = [] # a list of entity_pos which in evidence sentences
-            for eid, e in enumerate(entities):
-                e_poss = []
-                for m in e:
-                    if m['sent_id'] not in evidence_sents:
-                        continue
-                    offset = sum([len(sents_local[i]) for i in evidence_sents if i<m['sent_id']]) # local_pos + len(previous sents in evidence)
-                    start = sent_map_local[m["sent_id"]][m["pos"][0]] + offset
-                    end = sent_map_local[m["sent_id"]][m["pos"][1]] + offset
-                    e_poss.append((start, end,))
-
-                if len(e_poss) > 0: # if the entity has at least one mention that occurs in evidence
-                    evidence_entity_pos.append(e_poss)
-                    eids_map.append(eid)
-
+        if evidence_sentences != 'none': # prepare data for evidence sentences contrast training
             feature['pos_input_ids'] = pos_input_ids # context make up by evidence senteces
             feature['eids_map'] = eids_map # entity ids which in evidence senteces
             feature['evidence_entity_pos'] = evidence_entity_pos # entity_pos in evidence senteces
-                
+            feature['evi_hts'] = evi_hts # entity pair in evidence senteces 
+            feature['hts_map'] = hts_map # entity pair which in evidence senteces  
         features.append(feature)
 
     print("# of documents {}.".format(i_line))
@@ -392,7 +413,6 @@ def read_gda(file_in, tokenizer, max_seq_length=1024):
     print("Number of documents: {}.".format(len(features)))
     print("Max document length: {}.".format(maxlen))
     return features
-
 
 def pseudo_doc2feature(title, evidence, sents_local, entities, sent_map_local, train_triple, tokenizer):
     relations, hts = [], []
