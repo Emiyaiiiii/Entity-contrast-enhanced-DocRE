@@ -172,11 +172,11 @@ def main():
                              "than this will be truncated, sequences shorter will be padded.")
 
     # Ablation Study
-    parser.add_argument("--axial_attention", default="none", type=str,
+    parser.add_argument("--axial_attention", default="multi_external", type=str,
                         help="type of AxialAttention.", choices=['none', 'self_attention', 'single_external', 'multi_external'])
     parser.add_argument("--evidence_sentences", default="entity_pair", type=str,
                         choices=['none', 'entity', 'entity_pair']) 
-    parser.add_argument("--classifier_loss", default="ATLoss", type=str,
+    parser.add_argument("--classifier_loss", default="AFLoss", type=str,
                         choices=['ATLoss', 'AFLoss'])
     parser.add_argument("--evi_loss", default="InfoNCE", type=str,
                         choices=['InfoNCE', 'CosineEmbeddingLoss'])
