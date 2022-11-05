@@ -172,11 +172,11 @@ def main():
                              "than this will be truncated, sequences shorter will be padded.")
 
     # Ablation Study
-    parser.add_argument("--axial_attention", default="multi_external", type=str,
+    parser.add_argument("--axial_attention", default="none", type=str,
                         help="type of AxialAttention.", choices=['none', 'self_attention', 'single_external', 'multi_external'])
     parser.add_argument("--evidence_sentences", default="entity_pair", type=str,
                         choices=['none', 'entity', 'entity_pair']) 
-    parser.add_argument("--classifier_loss", default="AFLoss", type=str,
+    parser.add_argument("--classifier_loss", default="ATLoss", type=str,
                         choices=['ATLoss', 'AFLoss'])
     parser.add_argument("--evi_loss", default="InfoNCE", type=str,
                         choices=['InfoNCE', 'CosineEmbeddingLoss'])
@@ -185,7 +185,7 @@ def main():
     parser.add_argument("--gamma_neg", default=1.0, type=float,
                         help="Gamma for negative class")
 
-    parser.add_argument("--train_batch_size", default=2, type=int,
+    parser.add_argument("--train_batch_size", default=4, type=int,
                         help="Batch size for training.")
     parser.add_argument("--test_batch_size", default=8, type=int,
                         help="Batch size for testing.")
