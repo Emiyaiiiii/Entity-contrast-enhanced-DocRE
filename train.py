@@ -40,19 +40,26 @@ def ATLOP_train(args, model, train_features, dev_features, test_features):
             model.zero_grad()
             for step, batch in enumerate(train_dataloader):
                 model.train()
-                inputs = {'input_ids': batch[0].to(args.device),
-                          'attention_mask': batch[1].to(args.device),
-                          'labels': batch[2],
-                          'entity_pos': batch[3],
-                          'hts': batch[4]
-                          }
-                if args.evidence_sentences != "none":
-                    inputs['pos_input_ids'] = batch[5].to(args.device)
-                    inputs['pos_input_mask'] = batch[6].to(args.device)
-                    inputs['eids_map'] = batch[7]
-                    inputs['evidence_entity_pos'] = batch[8]
-                    inputs['evi_hts'] = batch[9]
-                    inputs['hts_map'] = batch[10]
+                if args.evidence == "none": # base model
+                    inputs = {'input_ids': batch[0].to(args.device),
+                            'attention_mask': batch[1].to(args.device),
+                            'labels': batch[2],
+                            'entity_pos': batch[3],
+                            'hts': batch[4]
+                            }
+                else:
+                    inputs = {'input_ids': batch[0].to(args.device),
+                            'attention_mask': batch[1].to(args.device),
+                            'labels': batch[2],
+                            'entity_pos': batch[3],
+                            'hts': batch[4],
+                            'evidence_input_ids': batch[5].to(args.device),
+                            'evidence_attention_mask': batch[6].to(args.device),
+                            'eids_map': batch[7],
+                            'evidence_entity_pos': batch[8],
+                            'evi_hts': batch[9],
+                            'hts_map': batch[10]
+                            }
                 outputs = model(**inputs)
                 loss = outputs[0] / args.gradient_accumulation_steps
                 with amp.scale_loss(loss, optimizer) as scaled_loss:
@@ -102,12 +109,18 @@ def ATLOP_evaluate(args, model, features, tag="dev"):
     preds = []
     for batch in dataloader:
         model.eval()
-
-        inputs = {'input_ids': batch[0].to(args.device),
-                  'attention_mask': batch[1].to(args.device),
-                  'entity_pos': batch[3],
-                  'hts': batch[4],
-                  }
+        if args.evidence == "none": # base model
+            inputs = {'input_ids': batch[0].to(args.device),
+                    'attention_mask': batch[1].to(args.device),
+                    'entity_pos': batch[3],
+                    'hts': batch[4],
+                    }
+        else: # only use base model and evidence sentences
+            inputs = {'input_ids': batch[5].to(args.device),
+                    'attention_mask': batch[6].to(args.device),
+                    'entity_pos': batch[8],
+                    'hts': batch[9],
+                    }
         with torch.no_grad():
             pred, *_ = model(**inputs)
             pred = pred.cpu().numpy()
@@ -134,10 +147,10 @@ def ATLOP_report(args, model, features):
         model.eval()
 
         inputs = {'input_ids': batch[0].to(args.device),
-                  'attention_mask': batch[1].to(args.device),
-                  'entity_pos': batch[3],
-                  'hts': batch[4],
-                  }
+                'attention_mask': batch[1].to(args.device),
+                'entity_pos': batch[3],
+                'hts': batch[4],
+                }
 
         with torch.no_grad():
             pred, *_ = model(**inputs)
@@ -172,14 +185,14 @@ def main():
                              "than this will be truncated, sequences shorter will be padded.")
 
     # Ablation Study
-    parser.add_argument("--axial_attention", default="none", type=str,
+    parser.add_argument("--axial_attention", default="self_attention", type=str,
                         help="type of AxialAttention.", choices=['none', 'self_attention', 'single_external', 'multi_external'])
-    parser.add_argument("--evidence_sentences", default="entity_pair", type=str,
+    parser.add_argument("--evidence", default="entity_pair", type=str,
                         choices=['none', 'entity', 'entity_pair']) 
-    parser.add_argument("--classifier_loss", default="ATLoss", type=str,
+    parser.add_argument("--classifier_loss", default="AFLoss", type=str,
                         choices=['ATLoss', 'AFLoss'])
-    parser.add_argument("--evi_loss", default="InfoNCE", type=str,
-                        choices=['InfoNCE', 'CosineEmbeddingLoss'])
+    parser.add_argument("--evi_loss", default="CosineEmbeddingLoss", type=str,
+                        choices=['InfoNCE', 'CosineEmbeddingLoss', 'KL'])
     parser.add_argument("--gamma_pos", default=1.0, type=float,
                         help="Gamma for positive class")
     parser.add_argument("--gamma_neg", default=1.0, type=float,
@@ -241,35 +254,35 @@ def main():
     read = read_docred
     suffix = '.{}.pt'.format(args.model_name_or_path)
     # train_features
-    if os.path.exists(os.path.join(args.data_dir, args.train_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix)):
-        train_features = torch.load(os.path.join(args.data_dir, args.train_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix))
+    if os.path.exists(os.path.join(args.data_dir, args.train_file + '_' + args.axial_attention + '_' + args.evidence + suffix)):
+        train_features = torch.load(os.path.join(args.data_dir, args.train_file + '_' + args.axial_attention + '_' + args.evidence + suffix))
         print('Loaded train features')
     else:
         train_file = os.path.join(args.data_dir, args.train_file)
-        train_features = read(train_file, tokenizer, max_seq_length=args.max_seq_length, axial_attention=args.axial_attention, evidence_sentences=args.evidence_sentences)
-        torch.save(train_features, os.path.join(args.data_dir, args.train_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix))
+        train_features = read(train_file, tokenizer, max_seq_length=args.max_seq_length, axial_attention=args.axial_attention, evidence=args.evidence)
+        torch.save(train_features, os.path.join(args.data_dir, args.train_file + '_' + args.axial_attention + '_' + args.evidence + suffix))
         print('Created and saved new train features')
     # dev_features   
-    if os.path.exists(os.path.join(args.data_dir, args.dev_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix)):
-        dev_features= torch.load(os.path.join(args.data_dir, args.dev_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix))
+    if os.path.exists(os.path.join(args.data_dir, args.dev_file + '_' + args.axial_attention + '_' + args.evidence + suffix)):
+        dev_features= torch.load(os.path.join(args.data_dir, args.dev_file + '_' + args.axial_attention + '_' + args.evidence + suffix))
         print('Loaded dev features')
     else:
         dev_file = os.path.join(args.data_dir, args.dev_file)
-        dev_features = read(dev_file, tokenizer, max_seq_length=args.max_seq_length, axial_attention=args.axial_attention, evidence_sentences=args.evidence_sentences)
-        torch.save(dev_features, os.path.join(args.data_dir, args.dev_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix))
+        dev_features = read(dev_file, tokenizer, max_seq_length=args.max_seq_length, axial_attention=args.axial_attention, evidence=args.evidence)
+        torch.save(dev_features, os.path.join(args.data_dir, args.dev_file + '_' + args.axial_attention + '_' + args.evidence + suffix))
         print('Created and saved new dev features')
     # test_features
-    if os.path.exists(os.path.join(args.data_dir, args.test_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix)):
-        test_features = torch.load(os.path.join(args.data_dir, args.test_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix))
+    if os.path.exists(os.path.join(args.data_dir, args.test_file + '_' + args.axial_attention + '_' + args.evidence + suffix)):
+        test_features = torch.load(os.path.join(args.data_dir, args.test_file + '_' + args.axial_attention + '_' + args.evidence + suffix))
         print('Loaded test features')
     else:
         test_file = os.path.join(args.data_dir, args.test_file)
-        test_features = read(test_file, tokenizer, max_seq_length=args.max_seq_length, axial_attention=args.axial_attention, evidence_sentences=args.evidence_sentences)
-        torch.save(test_features, os.path.join(args.data_dir, args.test_file + '_' + args.axial_attention + '_' + args.evidence_sentences + suffix))
+        test_features = read(test_file, tokenizer, max_seq_length=args.max_seq_length, axial_attention=args.axial_attention, evidence=args.evidence)
+        torch.save(test_features, os.path.join(args.data_dir, args.test_file + '_' + args.axial_attention + '_' + args.evidence + suffix))
         print('Created and saved new test features')
 
     #Training
-    wandb.init(project="ATLOP", entity="15346186000", config=args)
+    wandb.init(project="ATLOP-TEST", entity="15346186000", config=args)
     
     set_seed(args)
     model = DocREModel(args, config, model, num_labels=args.num_labels)
