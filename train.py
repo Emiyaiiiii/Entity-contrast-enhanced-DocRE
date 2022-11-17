@@ -273,7 +273,7 @@ def main():
         print('Created and saved new test features')
 
     #Training
-    wandb.init(project="ATLOP", entity="15346186000", config=args)
+    wandb.init(project="ATLOP-TEST", entity="15346186000", config=args)
     
     set_seed(args)
     model = DocREModel(args, config, model, num_labels=args.num_labels)

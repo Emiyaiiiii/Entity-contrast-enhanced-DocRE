@@ -69,15 +69,15 @@ def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none',
         evidence_sents = []
         if "labels" in sample:
             for label in sample['labels']:
-                evidence = label['evidence']
+                evidence_sentences = label['evidence']
                 evidence_sents.extend(label['evidence'])
                 r = int(docred_rel2id[label['r']])
                 if (label['h'], label['t']) not in train_triple:
                     train_triple[(label['h'], label['t'])] = [
-                        {'relation': r, 'evidence': evidence}]
+                        {'relation': r, 'evidence': evidence_sentences}]
                 else:
                     train_triple[(label['h'], label['t'])].append(
-                        {'relation': r, 'evidence': evidence})
+                        {'relation': r, 'evidence': evidence_sentences})
             for entity in entities:
                 evidence_sents.extend([mention['sent_id'] for mention in entity])
             evidence_sents = list(set(evidence_sents))
@@ -126,7 +126,7 @@ def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none',
                 relation = [0] * len(docred_rel2id)
                 for mention in train_triple[h, t]:
                     relation[mention["relation"]] = 1
-                    evidence = mention["evidence"]
+                    evidence_sentences = mention["evidence"]
                 relations.append(relation)
                 hts.append([h, t])
                 if h in eids_map and t in eids_map:
@@ -154,7 +154,7 @@ def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none',
                         relation = [0] * len(docred_rel2id)
                         for mention in train_triple[h, t]:
                             relation[mention["relation"]] = 1
-                            evidence = mention["evidence"]
+                            evidence_sentences = mention["evidence"]
                         relations.append(relation)
                         hts.append([h, t])
                         if h in eids_map and t in eids_map:

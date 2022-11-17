@@ -4,6 +4,7 @@ import torch.nn as nn
 from opt_einsum import contract
 from long_seq import process_long_input
 from losses import ATLoss, AFLoss
+import torch.nn.functional as F
 from transformers import BertConfig, BertModel, BertTokenizer
 from axial_attention.axial_attention import calculate_permutations, PermuteToFrom, SelfAttention
 from torch.nn import init
