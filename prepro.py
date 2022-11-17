@@ -15,7 +15,7 @@ def chunks(l, n):
     return res
 
 
-def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none', evidence_sentences='Train'):
+def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none', enhance='none'):
     i_line = 0
     pos_samples = 0
     neg_samples = 0
@@ -97,7 +97,7 @@ def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none',
         pos_input_ids = []
         eids_map = [] # a list of entity_id which in evidence sentences
         evidence_entity_pos = [] # a list of entity_pos which in evidence sentences
-        if evidence_sentences != 'none': # prepare data for evidence sentences contrast training
+        if enhance != 'none': # prepare data for evidence sentences contrast training
             if len(evidence_sents)>0:
                 for i_s, sent in enumerate(sent_map):
                     sent=list(sent.values())
@@ -181,7 +181,7 @@ def read_docred(file_in, tokenizer, max_seq_length=1024 ,axial_attention='none',
                    'title': sample['title']
                    }
 
-        if evidence_sentences != 'none': # prepare data for evidence sentences contrast training
+        if enhance != 'none': # prepare data for evidence sentences contrast training
             feature['pos_input_ids'] = pos_input_ids # context make up by evidence senteces
             feature['eids_map'] = eids_map # entity ids which in evidence senteces
             feature['evidence_entity_pos'] = evidence_entity_pos # entity_pos in evidence senteces

@@ -130,45 +130,16 @@ class AxialTransformer_by_entity(nn.Module):
           x = self.lns[idx](x)
         return x
 
-class DocREModel(nn.Module):
-    def __init__(self, args, config, model, emb_size=768, block_size=64, num_labels=-1):
+class EntityEnhanceModel(nn.Module):
+    def __init__(self, args, config, model, emb_size=768) -> None:
         super().__init__()
-        self.args = args
         self.config = config
+        self.args = args
         self.model = model
-        self.hidden_size = config.hidden_size
-        self.axial_attention = args.axial_attention
-
-        if self.args.classifier_loss == 'ATLoss':
-            self.loss_fnt = ATLoss()
-        elif self.args.classifier_loss == 'AFLoss':
-            self.loss_fnt = AFLoss(gamma_pos = self.args.gamma_pos, gamma_neg = self.args.gamma_neg,)
-
-        if self.args.evidence_sentences != "none":
-            self.bilinear = nn.Linear(emb_size * block_size, config.num_labels) # for base model
-            self.ebilinear = nn.Linear(emb_size * block_size, config.num_labels) # for evidence model
-            
-            if self.axial_attention is not 'none':
-                self.classifier = nn.Linear(config.hidden_size , config.num_labels)
-                self.projection = nn.Linear(emb_size * block_size, config.hidden_size, bias=False)
-                self.axial_transformer = AxialTransformer_by_entity(emb_size = config.hidden_size, dropout=0.0, num_layers=6, heads=8, axial_attention=self.axial_attention)        
-        else:
-            self.bilinear = nn.Linear(emb_size * block_size, config.num_labels)
-
-        if self.args.evi_loss == 'InfoNCE':
-            self.contarst_loss_fnt = InfoNCE(temperature=1)
-        elif self.args.evi_loss == 'CosineEmbeddingLoss':
-            self.contarst_loss_fnt = torch.nn.CosineEmbeddingLoss()
-    
-
         self.head_extractor = nn.Linear(2 * config.hidden_size, emb_size)
         self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
 
-        self.emb_size = emb_size
-        self.block_size = block_size
-        self.num_labels = num_labels
-
-    def encode(self, input_ids, attention_mask, pos_input_ids, pos_input_mask):
+    def encode(self, input_ids, attention_mask):
         config = self.config
         if config.transformer_type == "bert":
             start_tokens = [config.cls_token_id]
@@ -177,81 +148,21 @@ class DocREModel(nn.Module):
             start_tokens = [config.cls_token_id]
             end_tokens = [config.sep_token_id, config.sep_token_id]
 
-        if pos_input_ids != None:
-            input_ids = torch.concat((input_ids, pos_input_ids), dim=0)
-            attention_mask = torch.concat((attention_mask, pos_input_mask), dim=0)
-            sequence_output, attention = process_long_input(self.model, input_ids, attention_mask, start_tokens, end_tokens)
-            sequence_output, evidence_sequence_output = sequence_output.chunk(2, 0)
-            attention, evidence_attention = attention.chunk(2, 0)
-            return sequence_output, attention, evidence_sequence_output, evidence_attention
-        else:
-            sequence_output, attention = process_long_input(self.model, input_ids, attention_mask, start_tokens, end_tokens)
-            return sequence_output, attention
-    
-    def get_entity_emb(self, sequence_output, evidence_sequence_output, entity_pos, evidence_entity_pos, eids_map):
-        offset = 1 if self.config.transformer_type in ["bert", "roberta"] else 0
-        n, c, em = sequence_output.size()
-        en, ec, em = evidence_sequence_output.size()
-        ori_embs = []
-        evi_embs = []
-        for i in range(len(entity_pos)):
-            ori_entities = []
-            evi_entities = []
-            for id, e in enumerate(entity_pos[i]):
-                if id in eids_map[i]:
-                    evi_e = evidence_entity_pos[i][eids_map[i].index(id)]
-                    ori_emb = []
-                    evi_emb = []
-                    if len(e) > 1 and len(evi_e) > 1:
-                        for start, end in e:
-                            if start + offset < c:
-                                # In case the entity mention is truncated due to limited max seq length.
-                                ori_emb.append(sequence_output[i, start + offset])
-                        if len(ori_emb) > 0:
-                            ori_emb = torch.logsumexp(torch.stack(ori_emb, dim=0), dim=0)
-                        else:
-                            ori_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
-
-                        for start, end in evi_e:
-                            if start + offset < ec:
-                                # In case the entity mention is truncated due to limited max seq length.
-                                evi_emb.append(evidence_sequence_output[i, start + offset])
-                        if len(evi_emb) > 0:
-                            evi_emb = torch.logsumexp(torch.stack(evi_emb, dim=0), dim=0)
-                        else:
-                            evi_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
-                            
-                    else:
-                        start, end = e[0]
-                        evi_start, evu_end = evi_e[0]
-                        if start + offset < c:
-                            ori_emb = sequence_output[i, start + offset]
-                        else:
-                            ori_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
-
-                        if evi_start + offset < ec:
-                            evi_emb = sequence_output[i, evi_start + offset]
-                        else:
-                            evi_emb = torch.zeros(self.config.hidden_size).to(sequence_output)
-
-                    ori_entities.append(ori_emb)
-                    evi_entities.append(evi_emb)
-            ori_embs.append(torch.stack(ori_entities, dim=0))  # [n_e, d]
-            evi_embs.append(torch.stack(evi_entities, dim=0))  # [n_e, d]
-        ori_embs = torch.cat(ori_embs, dim=0) # [num_entities, embs]
-        evi_embs = torch.cat(evi_embs, dim=0) # [num_entities, embs]
-        return ori_embs, evi_embs
-
+        sequence_output, attention = process_long_input(self.model, input_ids, attention_mask, start_tokens, end_tokens)
+        return sequence_output, attention
+ 
     def get_hrt(self, sequence_output, attention, entity_pos, hts):
         offset = 1 if self.config.transformer_type in ["bert", "roberta"] else 0
         n, h, _, c = attention.size()
         hss, tss, rss = [], [], []
-        for i in range(n):
+        b, seq_l, h_size = sequence_output.size()
+        n_e = 42
+        for i in range(len(entity_pos)):
             entity_embs, entity_atts = [], []
             for e in entity_pos[i]:
                 if len(e) > 1:
                     e_emb, e_att = [], []
-                    for start, end in e:
+                    for start, end in e: 
                         if start + offset < c:
                             # In case the entity mention is truncated due to limited max seq length.
                             e_emb.append(sequence_output[i, start + offset])
@@ -272,30 +183,115 @@ class DocREModel(nn.Module):
                         e_att = torch.zeros(h, c).to(attention)
                 entity_embs.append(e_emb)
                 entity_atts.append(e_att)
-
             if len(entity_embs)>0 and len(entity_atts)>0:
                 entity_embs = torch.stack(entity_embs, dim=0)  # [n_e, d]
                 entity_atts = torch.stack(entity_atts, dim=0)  # [n_e, h, seq_len]
+                s_ne, _ = entity_embs.size()
 
                 ht_i = torch.LongTensor(hts[i]).to(sequence_output.device)
                 hs = torch.index_select(entity_embs, 0, ht_i[:, 0])
                 ts = torch.index_select(entity_embs, 0, ht_i[:, 1])
+
+                pad_hs = torch.zeros((n_e, n_e, h_size)).to(sequence_output)
+                pad_ts = torch.zeros((n_e, n_e, h_size)).to(sequence_output)
+                pad_hs[:s_ne, :s_ne, :] = hs.view(s_ne, s_ne, h_size)
+                pad_ts[:s_ne, :s_ne, :] = ts.view(s_ne, s_ne, h_size)
+
                 h_att = torch.index_select(entity_atts, 0, ht_i[:, 0])
                 t_att = torch.index_select(entity_atts, 0, ht_i[:, 1])
-
-                ht_att = (h_att * t_att).mean(1)
-                ht_att = ht_att / (ht_att.sum(1, keepdim=True) + 1e-5)
+                m = torch.nn.Threshold(0,0)
+                ht_att = m((h_att * t_att).mean(1))
+                ht_att = ht_att / (ht_att.sum(1, keepdim=True) + 1e-10)
                 rs = contract("ld,rl->rd", sequence_output[i], ht_att)
 
-                hss.append(hs)
-                tss.append(ts)
-                rss.append(rs)
-        hss = torch.cat(hss, dim=0)
-        tss = torch.cat(tss, dim=0)
-        rss = torch.cat(rss, dim=0)
+                pad_rs = torch.zeros((n_e, n_e, h_size)).to(sequence_output)
+                pad_rs[:s_ne, :s_ne, :] = rs.view(s_ne, s_ne, h_size)
+
+                hss.append(pad_hs) 
+                tss.append(pad_ts) 
+                rss.append(pad_rs)
+        hss = torch.stack(hss, dim=0) 
+        tss = torch.stack(tss, dim=0)
+        rss = torch.stack(rss, dim=0)
         return hss, rss, tss
 
-    def get_hrt_adjacency_matrix(self, sequence_output, attention, entity_pos, hts):
+    def forward(self, input_ids, attention_mask, entity_pos, hts):
+        sequence_output, attention = self.encode(input_ids, attention_mask) # sequence_output: [batch\batch*2, max_seq_length, emb], attention: [batch\batch*2, num_layer, max_seq_length, emb]
+        hs, rs, ts = self.get_hrt(sequence_output, attention, entity_pos, hts)
+        hs = torch.tanh(self.head_extractor(torch.cat([hs, rs], dim=3)))
+        ts = torch.tanh(self.tail_extractor(torch.cat([ts, rs], dim=3)))
+        return hs, ts
+
+class EntityPairEnhanceModel(nn.Module):
+    def  __init__(self, args, config):
+        super().__init__()
+        self.config = config
+        self.classifier_t = nn.Linear(config.hidden_size , config.num_labels)
+        self.axial_transformer = AxialTransformer_by_entity(emb_size = config.hidden_size, dropout=0.0, num_layers=6, heads=8, axial_attention=args.axial_attention) 
+
+    def forward(self, feature, self_mask, nes):
+        feature = self.axial_transformer(feature) + feature
+        logits_t = self.classifier_t(feature)
+
+        logits_classifier_t = logits_t * self_mask
+        logits_classifier_t = torch.cat([logits_classifier_t.clone()[x, :nes[x], :nes[x] , :].reshape(-1, self.config.num_labels) for x in range(len(nes))])
+        return feature, logits_classifier_t
+
+class DocREModel(nn.Module):
+    def __init__(self, args, config, model, emb_size=768, block_size=64, num_labels=-1):
+        super().__init__()
+        self.args = args
+        self.config = config
+        self.model = model
+        self.hidden_size = config.hidden_size
+        self.ne = args.ne
+        self.enhance = args.enhance
+
+        if self.args.enhance != 'none':
+            self.feature_loss_fnt = torch.nn.MSELoss()
+
+            if self.args.evi_loss == 'InfoNCE':
+                self.contrast_loss_fnt = InfoNCE()
+            elif self.args.evi_loss == 'CosineEmbeddingLoss':
+                self.contrast_loss_fnt = torch.nn.CosineEmbeddingLoss()
+
+        if self.args.classifier_loss == 'ATLoss':
+            self.loss_fnt = ATLoss()
+        elif self.args.classifier_loss == 'AFLoss':
+            self.loss_fnt = AFLoss(self.args.gamma_pos, self.args.gamma_neg)
+
+        self.classifier = nn.Linear(config.hidden_size , config.num_labels)  
+        self.projection = nn.Linear(emb_size * block_size, config.hidden_size, bias=False) 
+
+        if self.enhance == 'entity_pair':
+            self.entityPairEnhanceModel = EntityPairEnhanceModel(args, config)
+        if self.enhance == 'context':
+            self.entityEnhanceModel = EntityEnhanceModel(args, config, model, emb_size)
+        if self.enhance == 'both':
+            self.entityPairEnhanceModel = EntityPairEnhanceModel(args, config)
+            self.entityEnhanceModel = EntityEnhanceModel(args, config, model, emb_size)
+
+        self.head_extractor = nn.Linear(2 * config.hidden_size, emb_size)
+        self.tail_extractor = nn.Linear(2 * config.hidden_size, emb_size)
+
+        self.emb_size = emb_size
+        self.block_size = block_size
+        self.num_labels = num_labels
+        
+    def encode(self, input_ids, attention_mask):
+        config = self.config
+        if config.transformer_type == "bert":
+            start_tokens = [config.cls_token_id]
+            end_tokens = [config.sep_token_id]
+        elif config.transformer_type == "roberta":
+            start_tokens = [config.cls_token_id]
+            end_tokens = [config.sep_token_id, config.sep_token_id]
+
+        sequence_output, attention = process_long_input(self.model, input_ids, attention_mask, start_tokens, end_tokens)
+        return sequence_output, attention
+ 
+ 
+    def get_hrt(self, sequence_output, attention, entity_pos, hts):
         offset = 1 if self.config.transformer_type in ["bert", "roberta"] else 0
         n, h, _, c = attention.size()
         hss, tss, rss = [], [], []
@@ -365,90 +361,107 @@ class DocREModel(nn.Module):
                 labels=None,
                 entity_pos=None,
                 hts=None,
-                pos_input_ids=None,
-                pos_input_mask=None,
+                evidence_input_ids=None,
+                evidence_attention_mask=None,
                 eids_map=None,
                 evidence_entity_pos=None,
                 evi_hts=None,
                 hts_map=None
                 ):
                 
-        # input_ids: [batch, max_seq_length]
-        # attention_mask: [batch, max_seq_length]
-        # labels:  [batch, class]
-        # entity_pos: [batch, entity, mention]
-        # hts: [batch, ht]
-        # pos_input_ids: [batch, max_seq_length]
-        # pos_input_mask: [batch, max_seq_length]
-        # eids_map: [batch, used_entity_ids]
-        # evidence_entity_pos: [batch, entity, mention]
-        # evi_hts: [batch, evi_ht]
-        # hts_map: [used_entity_pair_ids]
+        sequence_output, attention = self.encode(evidence_input_ids, evidence_attention_mask) # sequence_output: [batch\batch*2, max_seq_length, emb], attention: [batch\batch*2, num_layer, max_seq_length, emb]
+        hs, rs, ts = self.get_hrt(sequence_output, attention, evidence_entity_pos, evi_hts)
 
-        if pos_input_ids != None: # contrast embedding
-            if self.args.evidence_sentences == "entity":
-                sequence_output, attention, evidence_sequence_output, evidence_attention = self.encode(input_ids, attention_mask, pos_input_ids, pos_input_mask) # sequence_output: [batch\batch*2, max_seq_length, emb], attention: [batch\batch*2, num_layer, max_seq_length, emb]
-                ori_embs, evi_embs = self.get_entity_emb(sequence_output, evidence_sequence_output, entity_pos, evidence_entity_pos, eids_map)
-            elif self.args.evidence_sentences == "entity_pair":
-                sequence_output, attention, evidence_sequence_output, evidence_attention = self.encode(input_ids, attention_mask, pos_input_ids, pos_input_mask) # sequence_output: [batch\batch*2, max_seq_length, emb], attention: [batch\batch*2, num_layer, max_seq_length, emb]                
-                if self.axial_attention is 'none':
-                    ehs, ers, ets = self.get_hrt(evidence_sequence_output, evidence_attention, evidence_entity_pos, evi_hts)
-                    ehs = torch.tanh(self.head_extractor(torch.cat([ehs, ers], dim=1)))
-                    ets = torch.tanh(self.tail_extractor(torch.cat([ets, ers], dim=1)))
+        # 头实体和尾实体表示
+        hs = torch.tanh(self.head_extractor(torch.cat([hs, rs], dim=3)))
+        ts = torch.tanh(self.tail_extractor(torch.cat([ts, rs], dim=3)))
 
-                    eb1 = ehs.view(-1, self.emb_size // self.block_size, self.block_size)
-                    eb2 = ets.view(-1, self.emb_size // self.block_size, self.block_size)
-                    ebl = (eb1.unsqueeze(3) * eb2.unsqueeze(2)).view(-1, self.emb_size * self.block_size)     
-                    elogits_classifier = self.ebilinear(ebl)
-                else: 
-                    ehs, ers, ets = self.get_hrt_adjacency_matrix(evidence_sequence_output, evidence_attention, evidence_entity_pos, evi_hts)
-                    ne = 42
-                    nes = [len(x) for x in evidence_entity_pos]
+        b1 = hs.view(-1, self.ne, self.ne, self.emb_size // self.block_size, self.block_size)
+        b2 = ts.view(-1, self.ne, self.ne, self.emb_size // self.block_size, self.block_size)
+        bl = (b1.unsqueeze(5) * b2.unsqueeze(4)).view(-1, self.ne, self.ne, self.emb_size * self.block_size)
 
-                    ehs = torch.tanh(self.head_extractor(torch.cat([ehs, ers], dim=3)))
-                    ets = torch.tanh(self.tail_extractor(torch.cat([ets, ers], dim=3)))
+        # 实体对表示
+        feature =  self.projection(bl) #[bs, ne, ne, em]
+        
+        logits_s = self.classifier(feature)
 
-                    eb1 = ehs.view(-1, ne, ne, self.emb_size // self.block_size, self.block_size)
-                    eb2 = ets.view(-1, ne, ne, self.emb_size // self.block_size, self.block_size)
-                    ebl = (eb1.unsqueeze(5) * eb2.unsqueeze(4)).view(-1, ne, ne, self.emb_size * self.block_size)
+        nes = [len(x) for x in evidence_entity_pos]
+        self_mask = (1 - torch.diag(torch.ones((self.ne)))).unsqueeze(0).unsqueeze(-1).to(sequence_output)
 
-                    feature =  self.projection(ebl) #[bs, ne, ne, em]
-                    feature = self.axial_transformer(feature) + feature
+        # eval
+        logits_classifier_s = logits_s * self_mask
+        logits_classifier_s = torch.cat([logits_classifier_s.clone()[x, :nes[x], :nes[x] , :].reshape(-1, self.config.num_labels) for x in range(len(nes))])
+        output = (self.loss_fnt.get_label(logits_classifier_s, num_labels=self.num_labels),)
+        
+        if labels is not None: # train
+            labels_s = [torch.tensor(label) for label in labels]
+            labels_s = torch.cat(labels_s, dim=0).to(logits_classifier_s)
+            loss = self.loss_fnt(logits_classifier_s.view(-1, self.config.num_labels).float(), labels_s.float())
 
-                    logits = self.classifier(feature)
+            # 上下文表示增强(有效)
+            if self.enhance == 'context':
+                hs_t, ts_t = self.entityEnhanceModel(input_ids, attention_mask, entity_pos, hts)
 
-                    self_mask = (1 - torch.diag(torch.ones((ne)))).unsqueeze(0).unsqueeze(-1).to(sequence_output)
-                    elogits_classifier = logits * self_mask
-                    elogits_classifier = torch.cat([elogits_classifier.clone()[x, :nes[x], :nes[x] , :].reshape(-1, self.config.num_labels) for x in range(len(nes))])
-        else:
-            sequence_output, attention = self.encode(input_ids, attention_mask, pos_input_ids, pos_input_mask) # sequence_output: [batch\batch*2, max_seq_length, emb], attention: [batch\batch*2, num_layer, max_seq_length, emb]
+                b1_t = hs_t.view(-1, self.ne, self.ne, self.emb_size // self.block_size, self.block_size)
+                b2_t = ts_t.view(-1, self.ne, self.ne, self.emb_size // self.block_size, self.block_size)
+                bl_t = (b1_t.unsqueeze(5) * b2_t.unsqueeze(4)).view(-1, self.ne, self.ne, self.emb_size * self.block_size)
 
-        # base model
-        hs, rs, ts = self.get_hrt(sequence_output, attention, entity_pos, hts)
+                feature_t =  self.projection(bl_t) #[bs, ne, ne, em]
+                
+                logits_t = self.classifier(feature_t)
+                logits_classifier_t = logits_t * self_mask
+                logits_classifier_t = torch.cat([logits_classifier_t.clone()[x, :nes[x], :nes[x] , :].reshape(-1, self.config.num_labels) for x in range(len(nes))])
+                
+                labels_t = [torch.tensor(label) for label in labels]
+                labels_t = torch.cat(labels_t, dim=0).to(logits_classifier_t)
+                loss_t = self.loss_fnt(logits_classifier_t.view(-1, self.config.num_labels).float(), labels_t.float())
 
-        hs = torch.tanh(self.head_extractor(torch.cat([hs, rs], dim=1)))
-        ts = torch.tanh(self.tail_extractor(torch.cat([ts, rs], dim=1)))
+                target = self.loss_fnt.get_res(self.loss_fnt.get_label(logits_classifier_t, num_labels=self.num_labels), labels_t)
+                contrast_loss = self.contrast_loss_fnt(logits_classifier_s, logits_classifier_t, target)
 
-        b1 = hs.view(-1, self.emb_size // self.block_size, self.block_size)
-        b2 = ts.view(-1, self.emb_size // self.block_size, self.block_size)
-        bl = (b1.unsqueeze(3) * b2.unsqueeze(2)).view(-1, self.emb_size * self.block_size)
-        logits_classifier = self.bilinear(bl)
-  
-        output = (self.loss_fnt.get_label(logits_classifier, num_labels=self.num_labels),)
+                feature_loss = self.feature_loss_fnt(hs_t, hs) + self.feature_loss_fnt(ts_t, ts)
 
-        if labels is not None:
-            labels = [torch.tensor(label) for label in labels]
-            labels = torch.cat(labels, dim=0).to(logits_classifier)
-            # 待添加：根据教师模型正误分类对比
-            loss = self.loss_fnt(logits_classifier.float(), labels.float())
+                loss = loss_t + 0.7 * loss + 0.3 * contrast_loss + 0.3 * feature_loss
 
-            if pos_input_ids != None:# contrast loss
-                if self.args.evidence_sentences == "entity":
-                    evi_sentences_loss = self.contarst_loss_fnt(ori_embs, evi_embs)
-                    loss = 0.9 * loss + evi_sentences_loss * 0.1
-                elif self.args.evidence_sentences == "entity_pair":
-                    evi_sentences_loss = self.contarst_loss_fnt(torch.index_select(logits_classifier, 0, torch.LongTensor(hts_map).to(logits_classifier.device)), elogits_classifier)
-                    loss = 0.9 * loss + evi_sentences_loss * 0.1
+            # 实体对表示增强(有效)
+            if self.enhance == 'entity_pair':
+                feature_t, logits_classifier_t = self.entityPairEnhanceModel(feature, self_mask, nes)
+                labels_t = [torch.tensor(label) for label in labels]
+                labels_t = torch.cat(labels_t, dim=0).to(logits_classifier_t)
+                loss_t = self.loss_fnt(logits_classifier_t.view(-1, self.config.num_labels).float(), labels_t.float())
 
+                target = self.loss_fnt.get_res(self.loss_fnt.get_label(logits_classifier_t, num_labels=self.num_labels), labels_t)
+                contrast_loss = self.contrast_loss_fnt(logits_classifier_s, logits_classifier_t, target)
+                feature_loss = self.feature_loss_fnt(feature_t, feature)
+
+                loss = loss_t + 0.7 * loss + 0.3 * contrast_loss + 0.3 * feature_loss
+
+            # 实体表示增强 + 实体对表示增强
+            if self.enhance == 'both':
+                hs_t, ts_t = self.entityEnhanceModel(input_ids, attention_mask, entity_pos, hts)
+
+                b1_t = hs_t.view(-1, self.ne, self.ne, self.emb_size // self.block_size, self.block_size)
+                b2_t = ts_t.view(-1, self.ne, self.ne, self.emb_size // self.block_size, self.block_size)
+                bl_t = (b1_t.unsqueeze(5) * b2_t.unsqueeze(4)).view(-1, self.ne, self.ne, self.emb_size * self.block_size)
+
+                feature_t =  self.projection(bl_t) #[bs, ne, ne, em]
+
+                # 实体对增强（CosineEmbeddingLoss）
+                feature_t, logits_classifier_t = self.entityPairEnhanceModel(feature_t, self_mask, nes)
+
+                labels_t = [torch.tensor(label) for label in labels]
+                labels_t = torch.cat(labels_t, dim=0).to(logits_classifier_t)
+                loss_t = self.loss_fnt(logits_classifier_t.view(-1, self.config.num_labels).float(), labels_t.float())
+
+                # Divergence loss
+                target = self.loss_fnt.get_res(self.loss_fnt.get_label(logits_classifier_t, num_labels=self.num_labels), labels_t)
+                contrast_loss = self.contrast_loss_fnt(logits_classifier_s, logits_classifier_t, target)
+
+                # 实体对Features损失
+                feature_loss = self.feature_loss_fnt(feature_t, feature) + self.feature_loss_fnt(hs_t, hs) + self.feature_loss_fnt(ts_t, ts)
+
+                loss = loss_t + 0.7 * loss + 0.3 * contrast_loss + 0.3 * feature_loss
+            
             output = (loss.to(sequence_output),) + output
+
         return output
